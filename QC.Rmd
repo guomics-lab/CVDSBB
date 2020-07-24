@@ -1,0 +1,98 @@
+
+
+
+```{r}
+
+rm(list = ls())
+library(readr)
+library(plyr)
+library(readxl)
+library(stringr)
+source("D:/datamining_library_ge20200306.R")
+df <- ge.readtable("CVDSSB_proteins_2020426.txt")
+df1 <- df[grepl("^1/",df$prot) & !grepl(";",df$prot),]
+df2 <- df1[,-1]
+row.names(df2) <- paste0(as.character(ge.split(df1$prot,"\\|",2)),"_",as.character(ge.split(df1$prot,"\\|",3)))
+
+names(df2) <- as.character(ge.split(names(df2),"\\.",2,"SW_"))
+df3 <- df2[,-which(names(df2) %in% c("52","113"))]
+##删除质谱检测信号低的样本
+
+##bio rep 
+info1 <- read_excel("sample_information_20200507.xlsx")
+label.1 <- info1$SampleID[match(names(df3),info1$sample_N)] 
+
+same_name <- na.omit(label.1[duplicated(label.1)]) %>% as.character()
+
+cv.bio <- cor.bio <- c()
+for (nm in same_name) {
+  data <- df3[,which(label.1==nm)]
+  data2 <- na.omit(data)
+  tmp1 <- apply(data2, 1 , function(x){sd(x,na.rm = T)/mean(x,na.rm = T)})
+  cv.bio <- c(cv.bio,tmp1)
+  cor.bio <- c(cor.bio,cor(data2[,1],data2[,2]))
+}
+
+
+##tech rep
+cv.tech <- cor.tech <- c()
+repB <- names(df3)[grepl("rep", names(df3))]
+for (i in repB) {
+  repa <- str_split(i,"_rep")[[1]][1]
+  data <- df3[,c(i,repa)]
+  data2 <- na.omit(data)
+  tmp1 <- apply(data2, 1 , function(x){sd(x,na.rm = T)/mean(x,na.rm = T)})
+  cv.tech <- c(cv.tech,tmp1)
+  cor.tech <- c(cor.tech,cor(data2[,1],data2[,2]))
+}
+
+## QC
+
+qc <- df3[,grepl("QC", names(df3))]
+ge.plot.pool.correlation(qc,"QC")
+mycor=cor(qc, use = "pairwise.complete.obs")
+a <- unique(as.numeric(mycor))[-1]
+
+max(cv.bio)
+max(cv.tech)
+max(cor.bio)
+max(cor.tech)
+
+min(cv.bio)
+min(cv.tech)
+min(cor.bio)
+min(cor.tech)
+```
+
+
+```{r}
+plot.vioplot <- function(sample1,sample2,title="",xlab="sample",ylab="value"){
+pdf(paste0(title, "_violin.pdf"))
+vioplot(sample1 ,sample2  ,
+         areaEqual=FALSE,
+        # rectCol= color, col= color,
+        lineCol=c("black", "black"),
+        border=c("black","black"),
+        names=c("biological","technology"),
+        main="rep", xlab=xlab, ylab=ylab,plotCentre = "point")
+dev.off()
+}
+
+plot.vioplot(cv.bio,cv.tech,"CV",ylab = "CV")
+
+
+plot.vioplot2 <- function(sample1,sample2,title="",xlab="sample",ylab="value"){
+pdf(paste0(title, "_violin.pdf"))
+vioplot(sample1 ,sample2  ,ylim = c(0.5,0.95),
+         areaEqual=FALSE,
+        # rectCol= color, col= color,
+        lineCol=c("black", "black"),
+        border=c("black","black"),
+        names=c("biological","technology"),
+        main="rep", xlab=xlab, ylab=ylab,plotCentre = "point")
+dev.off()
+}
+plot.vioplot2(cor.bio,cor.tech,"cor",ylab = "correlation")
+
+
+```

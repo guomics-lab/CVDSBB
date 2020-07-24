@@ -1,0 +1,149 @@
+
+```{r}
+rm(list = ls())
+library(readr)
+library(plyr)
+library(readxl)
+library(stringr)
+
+
+info <- read_excel("sample_information_20200507.xlsx")
+info2 <- read_excel("patient_informmation_CVDSBB_transfer_20200520_SAA_CRP_3_48h(2)(1).xlsx")
+
+info3 <- info2
+
+
+plot.boxplot4 <- function(data,Label,y,type,filename,title="boxplot"){
+  a <- ggplot(data=data, aes(x = Label, y =y, color=type)) +
+    scale_color_manual(values = brewer.pal(5,"Set1")[c(3,2,5,1,4)]) +
+    geom_boxplot(alpha = .5,size=0.8, outlier.shape = NA)+
+    geom_jitter(alpha = 0.3,size=2) +
+    # coord_cartesian(ylim = c(0, 2.5)) +
+    # geom_hline(aes(yintercept=5), colour="black", linetype="dashed", size=1.)+
+    # geom_hline(aes(yintercept=0.1), colour="black", linetype="dashed", size=1.)+
+    labs(x="Label",y="Content")+
+    ggtitle(title)+
+    theme_bw() + 
+    theme(panel.border = element_blank())+
+    theme(axis.line = element_line(size=0.7, colour = "black")) +
+    theme(panel.grid =element_blank())+  
+    theme(axis.text = element_text(size = 15,colour = "black"),text = element_text(size = 15,colour = "black"))+
+    theme(axis.text.x = element_text( hjust = 1))
+  ggsave(paste0(filename, ".pdf"),plot=a,width=8,height=8)
+}
+
+
+info3[info3=="NA"] <- NA
+info3[,16:21] <- as.numeric(as.matrix(info3[,16:21]))
+names(info3)[17] <- "CRP"
+for (i in 16:21) {
+  data <- data.frame(Label = as.factor(info3$Label),type =as.factor(info3$Clinical_type),num=info3[,i])
+  plot.boxplot4(data, Label =(data$Label), y =  data[,3] ,type = (data$Clinical_type), filename = paste0("mlselect_prot_boxplot20200522/",names(info3)[i],"_clinic"),title = paste0(names(info3)[i],"_clinic"))
+
+  
+}
+
+
+```
+
+
+```{r}
+
+rm(list = ls())
+library(readr)
+library(plyr)
+library(readxl)
+library(stringr)
+source("D:/datamining_library_ge20200306.R")
+df <- ge.readtable("CVDSSB_proteins_2020426.txt")
+df1 <- df[grepl("^1/",df$prot) & !grepl(";",df$prot),!grepl("QC_",names(df)) & !grepl("_rep",names(df))]
+df2 <- df1[,-1]
+row.names(df2) <- paste0(as.character(ge.split(df1$prot,"\\|",2)),"_",as.character(ge.split(df1$prot,"\\|",3)))
+
+info1 <- read_excel("sample_information_20200507.xlsx")
+info1 <- info1[-which(info1$sample_N %in% c("52", "113")),]
+info2 <- read_excel("patient_informmation_CVDSBB_transfer_20200520_SAA_CRP_3_48h(2)(1).xlsx")
+label.1 <- info1$SampleID[match(as.character(ge.split(names(df2),"\\.",2,"SW_")),info1$sample_N)] 
+label <- info2$Label[match(label.1,info2$SampleID)]
+type <- info2$Clinical_type[match(label.1,info2$SampleID)]
+na <- which(is.na(label))
+label <- label[-na]
+type <- type[-na]
+df3 <- df2[,-na] %>% as.data.frame()
+
+genenm <- read_xlsx("uniprot_gene2.xlsx")
+
+
+prot.nonsevere <- read.csv("../20200513_RF/nonsevere_feature10.csv",stringsAsFactors = F)
+df3.nonsevere <- df3[prot.nonsevere$x,]
+row.names(df3.nonsevere) <- genenm$names[match(as.character(ge.split(row.names(df3.nonsevere),"_",1)) ,genenm$yourlist)]
+tmp <- df3[grepl("SAA",row.names(df3)),]
+row.names(tmp) <- as.character(ge.split(row.names(tmp),"_H",1))
+df3.nonsevere <- rbind(df3.nonsevere,tmp)
+
+prot.severe <- read.csv("../20200520_delect2_RF/severe_step2_feature9.csv",stringsAsFactors = F)
+df3.severe <- df3[prot.severe$x,]
+row.names(df3.severe) <- genenm$names[match(as.character(ge.split(row.names(df3.severe),"_",1)) ,genenm$yourlist)]
+
+prot.26 <- read.csv("cor_protein_clin_NA50_26prots_20200608(2)(1).csv",stringsAsFactors = F)
+df3.prot26 <- df3[prot.26$X,]
+row.names(df3.prot26) <- paste0(as.character(ge.split(row.names(df3.prot26),"_",1)),"_",prot.26$X.1[match(as.character(ge.split(row.names(df3.prot26),"_",1)) ,prot.26$X)])
+
+plot.boxplot4 <- function(data,Label,y,type,filename,title="boxplot"){
+  a <- ggplot(data=data, aes(x = Label, y =y, color=type)) +
+    scale_color_manual(values = brewer.pal(5,"Set1")[c(3,2,5,1,4)]) +
+    geom_boxplot(alpha = .5,size=0.8, outlier.shape = NA)+
+    geom_jitter(alpha = 0.3,size=2) +
+    # coord_cartesian(ylim = c(0, 2.5)) +
+    # geom_hline(aes(yintercept=5), colour="black", linetype="dashed", size=1.)+
+    # geom_hline(aes(yintercept=0.1), colour="black", linetype="dashed", size=1.)+
+    labs(x="Label",y="Content")+
+    ggtitle(title)+
+    theme_bw() + 
+    theme(panel.border = element_blank())+
+    theme(axis.line = element_line(size=0.7, colour = "black")) +
+    theme(panel.grid =element_blank())+  
+    theme(axis.text = element_text(size = 15,colour = "black"),text = element_text(size = 15,colour = "black"))+
+    theme(axis.text.x = element_text( hjust = 1))
+  ggsave(paste0(filename, ".pdf"),plot=a,width=8,height=8)
+}
+
+for (i in 1:nrow(df3.prot26)) {
+  data <- data.frame(Label = as.factor(label),type =as.factor(type),num=as.numeric(df3.prot26[i,]))
+  plot.boxplot4(data, Label =(data$Label), y =  data[,3] ,type = (data$type), filename = paste0("mlselect_prot_boxplot20200522/prot26/",row.names(df3.prot26)[i]),title = paste0(row.names(df3.prot26)[i]))
+}
+
+
+for (i in 1:nrow(df3.nonsevere)) {
+  data <- data.frame(Label = as.factor(label),type =as.factor(type),num=as.numeric(df3.nonsevere[i,]))
+  plot.boxplot4(data, Label =(data$Label), y =  data[,3] ,type = (data$type), filename = paste0("mlselect_prot_boxplot20200522/nonsevere/",row.names(df3.nonsevere)[i]),title = paste0(row.names(df3.nonsevere)[i]))
+}
+
+for (i in 1:nrow(df3.severe)) {
+  data <- data.frame(Label = as.factor(label),type =as.factor(type),num=as.numeric(df3.severe[i,]))
+  plot.boxplot4(data, Label =(data$Label), y =  data[,3] ,type = (data$type), filename = paste0("mlselect_prot_boxplot20200522/severe/",row.names(df3.severe)[i]),title = paste0(row.names(df3.severe)[i]))
+}
+
+df3.c4 <- df3[grepl("CO4",row.names(df3)),]
+for (i in 1:nrow(df3.c4)) {
+  data <- data.frame(Label = as.factor(label),type =as.factor(type),num=as.numeric(df3.c4[i,]))
+  plot.boxplot4(data, Label =(data$Label), y =  data[,3] ,type = (data$type), filename = paste0("mlselect_prot_boxplot20200522/",row.names(df3.c4)[i]),title = paste0(row.names(df3.c4)[i]))
+}
+
+
+skyline <- read.csv("skylinenorep.csv",stringsAsFactors = F)
+label.1skyline <- info1$SampleID[match(as.character(str_sub(names(skyline)[4:ncol(skyline)],2,-1)),info1$sample_N)] 
+label.skyline <- info2$Label[match(label.1skyline,info2$SampleID)]
+type.skyline <- info2$Clinical_type[match(label.1skyline,info2$SampleID)]
+
+df.CRP <- skyline[grepl("CRP",skyline$Protein),]
+  data <- data.frame(Label = as.factor(label.skyline),type =as.factor(type.skyline),num=as.numeric(df.CRP[1,-c(1:3)])%>% log2() )
+  plot.boxplot4(data, Label =(data$Label), y =  data[,3] ,type = (data$type), filename = paste0("mlselect_prot_boxplot20200522/CRP"),title = paste0("CRP(skyline)"))
+  
+df.alb <- skyline[grepl("ALB",skyline$Protein),]
+  data <- data.frame(Label = as.factor(label.skyline),type =as.factor(type.skyline),num=as.numeric(df.alb[1,-c(1:3)])%>% log2() )
+  plot.boxplot4(data, Label =(data$Label), y =  data[,3] ,type = (data$type), filename = paste0("mlselect_prot_boxplot20200522/ALB1"),title = paste0("ALB(skyline)"))
+  
+  data <- data.frame(Label = as.factor(label.skyline),type =as.factor(type.skyline),num=as.numeric(df.alb[2,-c(1:3)])%>% log2() )
+  plot.boxplot4(data, Label =(data$Label), y =  data[,3] ,type = (data$type), filename = paste0("mlselect_prot_boxplot20200522/ALB2"),title = paste0("ALB(skyline)"))
+```

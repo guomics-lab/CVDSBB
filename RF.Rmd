@@ -1,0 +1,522 @@
+
+
+```{r}
+rm(list = ls())
+library(readr)
+library(readxl)
+library(stringr)
+library(magrittr)
+source("D:/datamining_library_ge20200306.R")
+df <- ge.readtable("../20200427/CVDSSB_proteins_2020426(2)(1).txt")
+df1 <- df[grepl("^1/",df$prot) & !grepl(";",df$prot),!grepl("QC_",names(df)) & !grepl("_rep",names(df))]
+df2 <- df1[,-1]
+row.names(df2) <- paste0(as.character(ge.split(df1$prot,"\\|",2)),"_",as.character(ge.split(df1$prot,"\\|",3)))
+
+info1 <- read_xlsx("../20200427/sample_information_20200426(2)(1).xlsx")
+info1 <- info1[-which(info1$sample_N %in% c("52", "113")),]
+info2 <- read_xlsx("../20200512/patient_informmation_CVDSBB_transfer_20200520_SAA_CRP_3_48h(2)(1).xlsx")
+label.1 <- info1$SampleID[match(as.character(ge.split(names(df2),"\\.",2,"SW_")),info1$sample_N)] 
+label <- info2$Label[match(label.1,info2$SampleID)]
+type <- info2$Clinical_type[match(label.1,info2$SampleID)]
+na <- which(is.na(label))
+label <- label[-na]
+type <- type[-na]
+df3 <- df2[,-na] %>% as.data.frame()
+
+crp <- read.csv("../20200512/skylinenorep.csv",stringsAsFactors = F)
+crp <- crp[which( crp$Protein == "CRP"),]
+crp[4:350] <- log2(crp[4:350])
+df.crp <- as.numeric(crp[1,4:350])
+
+nm1 <- ge.split(names(df3),"\\.",1,"SW_") %>% as.character()
+nm2 <- str_sub(names(df.crp),2,-1)
+df3["P02741_CRP_HUMAN",] <- df.crp[match(nm1,nm2)]
+
+```
+
+
+
+
+RF caixue's feature , combine type 5-3 , separate label severe/non severe
+```{r}
+protname <- read_xlsx("severe_42prots.xlsx",col_names = F)
+#protname <- protname[!grepl("CO8A",protname$severe),]
+prot.1 <- paste0(as.character(ge.split( as.character(row.names(df3)),"_",2)),"_",as.character(ge.split(as.character(row.names(df3)),"_",3)))
+prot1 <- row.names(df3)[match(na.omit(protname$...1),prot.1)]
+
+df3[is.na(df3)] <- min(df3,na.rm = T)
+df4 <- df3[prot1,label!=0 & type=="Severe"]
+df4 <- df4[!grepl("NA",row.names(df4)),]
+label.1 <- info1$SampleID[match(as.character(ge.split(names(df4),"\\.",2,"SW_")),info1$sample_N)] 
+label <- info2$Label[match(label.1,info2$SampleID)]
+df4 <- df4[,label!=3]
+label <- label[label!=3]
+
+label[label==2] <- 1
+label[label==4] <- 5
+label <- factor(label)
+
+#120
+set.seed(120)
+test <- sample(1:length(label),30)
+test_set <- t(df4[,test]) %>% as.data.frame()
+test_label <- label[test]
+
+train <- setdiff(1:length(label),test)
+train_set <- t(df4[,train]) %>% as.data.frame()
+train_set$label <- label[train]
+
+# write.csv(row.names(test_set),"severe_test_samplename.csv")
+ge.plot.tsne(t(test_set),test_label,"tsne_testset")
+
+ge.plot.pca.label(t(test_set),test_label,ge.split(row.names(test_set),"\\.",1,"SW_"),"pca_testset")
+###################################################
+
+
+#-------------------------------------
+#验证模型
+
+accu <- c()
+for (i in seq(1,3,0.5)) {
+  set.seed(2020.3)
+  tmpRF2 <- randomForest(as.factor(label) ~ . ,data=train_set,importance=T,ntree=1000,nodesize=5)
+  result <- data.frame(importance(tmpRF2,type=1))
+  result1 <- row.names(result)[result$MeanDecreaseAccuracy>i]
+  set.seed(2020.3)
+ for (seed in runif(50,1,1000)) {
+  for (fd in 3:6) {
+  set.seed(seed)
+  folds <- createFolds(train_set$label,fd)
+  n=0
+  	for(fold in folds){
+  	  n=n+1
+  	   #fold=folds[[8]]
+  	   valids <- train_set[fold,result1]
+  	   valids$label <- train_set$label[fold]
+  	   trains <- train_set[setdiff(1:dim(train_set)[1],fold),result1]
+  	   trains$label <- train_set$label[setdiff(1:dim(train_set)[1],fold)]
+  	   trains$label <- as.factor(trains$label)
+  	   for (ntree in seq(600,1000,200)) {
+   	   set.seed(2020.3)
+  	   tmpRF <- randomForest(as.factor(label) ~ . ,data=trains,importance=T,ntree=ntree,nodesize=5)
+  	   fea <- data.frame(importance(tmpRF,type=1))
+  	   for (dec in 0:3) {
+  	     feature <- row.names(fea)[fea$MeanDecreaseAccuracy>dec]
+  	     if(length(feature)>1){
+  	     train2 <- trains[,feature]
+  	     train2$label <- trains$label
+  	     tmpRF3 <- randomForest(as.factor(label) ~ . ,data=train2,importance=T,ntree=ntree,nodesize=5)
+  	  predicted <- predict(tmpRF3,valids,type='prob')
+      predicts <- t(apply(predicted,1,function(v){v/sum(v)}))
+      colnames(predicts) <- colnames(predicted)
+      predicts <- data.frame(predicts,check.names=F)
+      predicts$predicted <- apply(predicts,1,function(v){names(v)[max(v)==v]})
+      predicts$observed <- valids$label
+      ROC <- roc(predicts$observed, as.numeric(predicts$`1`))
+      auc <- as.numeric(ROC[["auc"]])
+  	   acc <- sum(predicts$predicted==predicts$observed)
+  	   accu <- rbind(accu,c(i,seed,fd,n,ntree,dec,acc/length(fold),auc))
+  	   }
+  	   }
+  	   }
+  	}
+}
+  }
+}
+write.csv(accu,paste0("test_severeallresult.csv"))
+tmp3 <- accu[which(accu[,7]==1 & accu[,8]==1), ]
+
+accu3 <- c()
+for (j in 1:nrow(tmp3)) {
+    set.seed(2020.3)
+  tmpRF2 <- randomForest(as.factor(label) ~ . ,data=train_set,importance=T,ntree=1000,nodesize=5)
+  result <- data.frame(importance(tmpRF2,type=1))
+  result1 <- row.names(result)[result$MeanDecreaseAccuracy>tmp3[j,1]]
+
+
+  set.seed(tmp3[j,2])
+  folds <- createFolds(train_set$label,tmp3[j,3])
+  	   fold=folds[[tmp3[j,4]]]
+  	   valids <- train_set[fold,result1]
+  	   valids$label <- train_set$label[fold]
+  	   trains <- train_set[setdiff(1:dim(train_set)[1],fold),result1]
+  	   trains$label <- train_set$label[setdiff(1:dim(train_set)[1],fold)]
+  	   trains$label <- as.factor(trains$label)
+     	   set.seed(2020.3)
+    	   tmpRF <- randomForest(as.factor(label) ~ . ,data=trains,importance=T,ntree=tmp3[j,5],nodesize=5)
+    	 
+    	   fea <- data.frame(importance(tmpRF,type=1))
+  	     feature <- row.names(fea)[fea$MeanDecreaseAccuracy>tmp3[j,6]]
+  	     train2 <- trains[,feature]
+  	     train2$label <- trains$label
+  	     tmpRF3 <- randomForest(as.factor(label) ~ . ,data=train2,importance=T,ntree=tmp3[j,5],nodesize=5)
+
+  	     for (time in 1:100) {
+  	       sm <- sample(1:72,50)
+  	       valids2 <- train_set[sm,]
+  	       valids2_label <- train_set$label[sm]
+  	       
+    	    predicted <- predict(tmpRF3,valids2,type='prob')
+          predicts <- t(apply(predicted,1,function(v){v/sum(v)}))
+          colnames(predicts) <- colnames(predicted)
+          predicts <- data.frame(predicts,check.names=F)
+          predicts$predicted <- apply(predicts,1,function(v){names(v)[max(v)==v]})
+          predicts$observed <- valids2_label
+      	   acc <- sum(predicts$predicted==predicts$observed)
+      	   accu3 <- rbind(accu3,c(tmp3[j,1],tmp3[j,2],tmp3[j,3],tmp3[j,4],tmp3[j,5],tmp3[j,6],acc/length(sm)))
+  	     }
+    	  
+}
+write.csv(accu3,paste0("test_severeallresultv4.csv"))
+
+tmp5 <- read.csv("test_120severeallresultv4.csv")
+accu3 <- tmp5[,-1]
+mean <- aggregate(accu3,by=list(accu3[,1],accu3[,2],accu3[,3],accu3[,4],accu3[,5],accu3[,6]),mean)
+sd <- aggregate(accu3,by=list(accu3[,1],accu3[,2],accu3[,3],accu3[,4],accu3[,5],accu3[,6]),sd)
+
+best <- mean[which(mean$V7==1 & sd$V7 ==0),]
+
+
+ # write.csv(accu,"accu_severe_caixuefeature_allresult.csv")
+sum <- read.csv("test_120_severeallresultv5.csv")
+sum <- c()
+ #for(nn in 1:nrow(best)){
+nn=23
+   set.seed(2020.3)
+  tmpRF2 <- randomForest(as.factor(label) ~ . ,data=train_set,importance=T,ntree=1000,nodesize=5)
+  result <- data.frame(importance(tmpRF2,type=1))
+  result1 <- row.names(result)[result$MeanDecreaseAccuracy>best[nn,1]]
+  # 	     write.csv(result1,"severe_step1_feature10.csv")
+  # 	     pdf("RF_step1_severeimportant_select10.pdf")
+  #         varImpPlot(tmpRF2,n.var=min(length(result1), nrow(tmpRF2$importance)))
+  #        dev.off()
+
+  set.seed(best[nn,2])
+  folds <- createFolds(train_set$label,best[nn,3])
+  	   fold=folds[[best[nn,4]]]
+  	   valids <- train_set[fold,result1]
+  	   valids$label <- train_set$label[fold]
+  	   trains <- train_set[setdiff(1:dim(train_set)[1],fold),result1]
+  	   trains$label <- train_set$label[setdiff(1:dim(train_set)[1],fold)]
+  	   trains$label <- as.factor(trains$label)
+     	   set.seed(2020.3)
+    	   tmpRF <- randomForest(as.factor(label) ~ . ,data=trains,importance=T,ntree=best[nn,5],nodesize=5)
+    	   fea <- data.frame(importance(tmpRF,type=1))
+  	     feature <- row.names(fea)[fea$MeanDecreaseAccuracy>best[nn,6]]
+  # 	     write.csv(feature,"severe_step2_feature9.csv")
+  # 	     pdf("RF_step2_severeimportant_select9.pdf")
+  #         varImpPlot(tmpRF,n.var=min(length(feature), nrow(tmpRF$importance)))
+  #        dev.off()
+  #        
+  	     train2 <- trains[,feature]
+  	     train2$label <- trains$label
+  	     tmpRF3 <- randomForest(as.factor(label) ~ . ,data=train2,importance=T,ntree=best[nn,5],nodesize=5)
+    	  predicted <- predict(tmpRF3,test_set,type='prob')
+        predicts <- t(apply(predicted,1,function(v){v/sum(v)}))
+        colnames(predicts) <- colnames(predicted)
+        predicts <- data.frame(predicts,check.names=F)
+        predicts$predicted <- apply(predicts,1,function(v){names(v)[max(v)==v]})
+        predicts$observed <- test_label
+    	  acc <- sum(predicts$predicted==predicts$observed)
+    	  sum <- c(sum,acc)
+    	 #}
+ROC <- roc(predicts$observed,predicts$`1`)
+ROC[["auc"]]
+pdf("ROC_severe20200521.pdf")
+  plot.roc(ROC,col = "blue3",ylim=c(0,1), print.auc=TRUE, print.thres="best",
+  main="RF ROC",legacy.axes = TRUE,print.auc.cex=1.2)
+dev.off()  	   
+#write.csv(feature,"severe_feature24.csv") 	   
+v <- test_set[,feature]
+v[,1:9] <- as.numeric(as.matrix(v))
+
+
+df6 <- test_set[row.names(predicts),feature]
+df7 <- apply(df6, 1, function(x){scale(as.numeric(x))})
+mean <- apply( df7,2,median)
+data <- data.frame(mean,predicts=predicts$`5`,sample2=row.names(predicts),type2=predicts$observed )
+
+
+ge.plot.point <- function(data,sample,value,type,group,title="",xlab="sample",ylab="value"){
+  a <- ggplot(data,aes(x=sample,y=value,group=group,color=group))+ 
+    geom_point()+geom_vline(xintercept = 0.5 ,linetype="dotted")+
+    ggtitle(paste0(title,"_pointplot"))+
+    xlab(xlab)+
+    ylab(ylab)+
+    xlim(0,1)+
+    theme(legend.text = element_text(size = 15,color = "black"),legend.position = 'top',
+          legend.title = element_text(size=15,color="black") ,
+          panel.grid.major =element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.background = element_blank(),
+          axis.line = element_line(colour = "black"))+
+    theme(panel.grid =element_blank())+
+    theme(axis.text = element_text(size = 10,color = "black"))+
+    theme(axis.text.x = element_text( hjust = 0.5))+
+    theme(plot.subtitle=element_text(size=30, hjust=0, color="black"))+
+    theme(axis.title.x=element_text(size=17, hjust=0.5, color="black"))+
+    theme(axis.title.y=element_text(size=17, hjust=0.5, color="black"))+  geom_text(aes(label=type,vjust = -0.5, hjust = 0.3),size = 2,show.legend = FALSE)
+  ggsave(paste0(title,"_pointplot.pdf"),plot=a,width=4,height=6)
+}
+
+
+ge.plot.point(data,data$predicts,data$mean,ge.split(as.character(data$sample2),"\\.",1,"SW_") ,data$type2, "RF predict_severe20200521","predict value","median")
+  	   
+
+
+######################################################################
+  	   
+protname <- read.csv("../20200513_RF/Nonsevere_model.csv")
+prot.1 <- paste0(as.character(ge.split( as.character(row.names(df3)),"_",2)),"_",as.character(ge.split(as.character(row.names(df3)),"_",3)))
+prot1 <- row.names(df3)[match(na.omit(protname$non.severe),prot.1)]
+
+df3[is.na(df3)] <- min(df3,na.rm = T)
+df4 <- df3[prot1, which( type=="Non-Severe")]
+df4 <- df4[!grepl("NA",row.names(df4)),]
+label.1 <- info1$SampleID[match(as.character(ge.split(names(df4),"\\.",2,"SW_")),info1$sample_N)] 
+label <- info2$Label[match(label.1,info2$SampleID)]
+df4 <- df4[,label!=3]
+label <- label[label!=3]
+
+label[label==2] <- 1
+label[label==4] <- 5
+label <- factor(label)
+
+set.seed(90)
+test <- sample(1:length(label),30)
+test_set <- t(df4[,test]) %>% as.data.frame()
+test_label <- label[test]
+
+train <- setdiff(1:length(label),test)
+train_set <- t(df4[,train]) %>% as.data.frame()
+train_set$label <- label[train]
+
+
+# ge.plot.tsne(t(test_set),test_label,"tsne_testset")
+# 
+# ge.plot.pca.label(t(test_set),test_label,ge.split(row.names(test_set),"\\.",1,"SW_"),"pca_testset")
+###################################################
+
+
+#-------------------------------------
+#验证模型
+
+accu <- c()
+  set.seed(2020.3)
+  tmpRF2 <- randomForest(as.factor(label) ~ . ,data=train_set,importance=T,ntree=1000,nodesize=5)
+  result <- data.frame(importance(tmpRF2,type=1))
+  result1 <- row.names(result)[result$MeanDecreaseAccuracy>0]
+  set.seed(2020.3)
+ for (seed in runif(50,1,1000)) {
+  for (fd in 3:6) {
+  set.seed(seed)
+  folds <- createFolds(train_set$label,fd)
+  n=0
+  	for(fold in folds){
+  	  n=n+1
+  	   #fold=folds[[8]]
+  	   valids <- train_set[fold,result1]
+  	   valids$label <- train_set$label[fold]
+  	   trains <- train_set[setdiff(1:dim(train_set)[1],fold),result1]
+  	   trains$label <- train_set$label[setdiff(1:dim(train_set)[1],fold)]
+  	   trains$label <- as.factor(trains$label)
+  	   for (ntree in seq(600,1000,200)) {
+  	     tmpRF3 <- randomForest(as.factor(label) ~ . ,data=trains,importance=T,ntree=ntree,nodesize=5)
+  	  predicted <- predict(tmpRF3,valids,type='prob')
+      predicts <- t(apply(predicted,1,function(v){v/sum(v)}))
+      colnames(predicts) <- colnames(predicted)
+      predicts <- data.frame(predicts,check.names=F)
+      predicts$predicted <- apply(predicts,1,function(v){names(v)[max(v)==v]})
+      predicts$observed <- valids$label
+      ROC <- roc(predicts$observed, as.numeric(predicts$`1`))
+      auc <- as.numeric(ROC[["auc"]])
+  	   acc <- sum(predicts$predicted==predicts$observed)
+  	   accu <- rbind(accu,c(seed,fd,n,ntree,acc/length(fold),auc))
+  	     }
+
+  	   }
+  	   }
+  	}
+
+write.csv(accu,paste0("test_nonsevere_allresult.csv"))
+# 
+accu <- read.csv("test_nonsevere_allresult.csv")
+accu <- accu[,-1]
+tmp3 <- accu[which(accu[,5]==1 & accu[,6]==1), ]
+
+best=as.numeric(accu[which(accu[,5]==max(accu[,5]) & accu[,6]==accu[,6])[1],])
+   set.seed(2020.3)
+  tmpRF2 <- randomForest(as.factor(label) ~ . ,data=train_set,importance=T,ntree=1000,nodesize=5)
+  result <- data.frame(importance(tmpRF2,type=1))
+  result1 <- row.names(result)[result$MeanDecreaseAccuracy>0]
+  #write.csv(result1,"nonsevere_feature10.csv")
+  pdf("RF_nonsevereimportant_select.pdf")
+          varImpPlot(tmpRF2,n.var=min(length(result1), nrow(tmpRF2$importance)))
+         dev.off()
+  set.seed(best[1])
+  folds <- createFolds(train_set$label,best[2])
+  	   fold=folds[[best[3]]]
+  	   valids <- train_set[fold,result1]
+  	   valids$label <- train_set$label[fold]
+  	   trains <- train_set[setdiff(1:dim(train_set)[1],fold),result1]
+  	   trains$label <- train_set$label[setdiff(1:dim(train_set)[1],fold)]
+  	   trains$label <- as.factor(trains$label)
+
+
+
+  	     tmpRF3 <- randomForest(as.factor(label) ~ . ,data=trains,importance=T,ntree=best[4],nodesize=5)
+    	  predicted <- predict(tmpRF3,test_set,type='prob')
+        predicts <- t(apply(predicted,1,function(v){v/sum(v)}))
+        colnames(predicts) <- colnames(predicted)
+        predicts <- data.frame(predicts,check.names=F)
+        predicts$predicted <- apply(predicts,1,function(v){names(v)[max(v)==v]})
+        predicts$observed <- test_label
+    	  acc <- sum(predicts$predicted==predicts$observed)
+    	  sum <- rbind(sum,c(send,acc))
+
+ROC <- roc(predicts$observed,predicts$`5`)
+ROC[["auc"]]
+   pdf("ROC_nonsevere20200514.pdf")
+  	   plot.roc(ROC,col = "blue3",ylim=c(0,1), print.auc=TRUE, 	
+  main="RF ROC",legacy.axes = TRUE,print.auc.cex=1.2)
+  	   dev.off()
+
+  	   
+v <- test_set[,result1]
+v[,1:10] <- as.numeric(as.matrix(v))
+# ge.plot.tsne(t(v),test_label,"SC_LC_test")
+
+
+
+df6 <- test_set[row.names(predicts),result1]
+df7 <- apply(df6, 1, function(x){scale(as.numeric(x))})
+mean <- apply( df7,2,median)
+data <- data.frame(mean,predicts=predicts$`5`,sample2=row.names(predicts),type2=predicts$observed )
+
+
+ge.plot.point <- function(data,sample,value,type,group,title="",xlab="sample",ylab="value"){
+  a <- ggplot(data,aes(x=sample,y=value,group=group,color=group))+ 
+    geom_point()+geom_vline(xintercept = 0.5 ,linetype="dotted")+
+    ggtitle(paste0(title,"_pointplot"))+
+    xlab(xlab)+
+    ylab(ylab)+
+    xlim(0,1)+
+    theme(legend.text = element_text(size = 15,color = "black"),legend.position = 'top',
+          legend.title = element_text(size=15,color="black") ,
+          panel.grid.major =element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.background = element_blank(),
+          axis.line = element_line(colour = "black"))+
+    theme(panel.grid =element_blank())+
+    theme(axis.text = element_text(size = 10,color = "black"))+
+    theme(axis.text.x = element_text( hjust = 0.5))+
+    theme(plot.subtitle=element_text(size=30, hjust=0, color="black"))+
+    theme(axis.title.x=element_text(size=17, hjust=0.5, color="black"))+
+    theme(axis.title.y=element_text(size=17, hjust=0.5, color="black"))+  geom_text(aes(label=type,vjust = -0.5, hjust = 0.3),size = 2,show.legend = FALSE)
+  ggsave(paste0(title,"_pointplot.pdf"),plot=a,width=4,height=6)
+}
+
+
+ge.plot.point(data,data$predicts,data$mean,ge.split(as.character(data$sample2),"\\.",1,"SW_") ,data$type2, "RF predict_nonsevere","predict value","median")
+  	   
+```
+
+
+```{r}
+################################--------------------------------------------
+protname <- read_xlsx("model.xlsx")
+prot.1 <- paste0(as.character(ge.split( as.character(row.names(df3)),"_",2)),"_",as.character(ge.split(as.character(row.names(df3)),"_",3)))
+prot1 <- row.names(df3)[match(na.omit(protname$`non-severe`),prot.1)]
+
+df3[is.na(df3)] <- min(df3,na.rm = T)
+df4 <- df3[prot1,label!=0 & type=="Non-Severe"]
+df4 <- df4[!grepl("NA",row.names(df4)),]
+label.1 <- info1$SampleID[match(as.character(ge.split(names(df4),"\\.",2,"SW_")),info1$sample_N)] 
+label <- info2$Label[match(label.1,info2$SampleID)]
+label[label==2] <- 1
+label[label==4] <- 5
+label <- factor(label)
+
+set.seed(40)
+test <- sample(1:length(label),30)
+test_set <- t(df4[,test]) %>% as.data.frame()
+test_label <- label[test]
+
+train <- setdiff(1:length(label),test)
+train_set <- t(df4[,train]) %>% as.data.frame()
+train_set$label <- label[train]
+
+###################################################
+
+accu <- c()
+
+  set.seed(2020.3)
+ for (seed in runif(50,1,1000)) {
+  for (fd in 3:10) {
+  set.seed(seed)
+  folds <- createFolds(train_set$label,fd)
+  n=0
+  	for(fold in folds){
+  	 n=n+1  
+  	   #fold=folds[[8]]
+  	   valids <- train_set[fold,]
+  	   trains <- train_set[setdiff(1:dim(train_set)[1],fold),]
+  	   trains$label <- as.factor(trains$label)
+  	   set.seed(2020.3)
+  	   tmpRF <- randomForest(label ~ . ,data=trains,importance=T,ntree=1000,nodesize=1)
+
+	     predicted <- predict(tmpRF,valids,type='class')
+       predicts <- data.frame(predicted)
+       predicts$observed <- valids$label
+  	   acc <- sum(predicts$predicted==predicts$observed)
+  	   accu <- rbind(accu,c(seed,fd,n,acc/length(fold)))
+ 
+  	}
+  }
+}
+
+ # write.csv(accu,"accu_severe_caixuefeature_allresult.csv")
+set.seed(964.1090145)
+folds <- createFolds(train_set$label,10)
+fold=folds[[6]]
+ valids <- train_set[fold,]
+  	   trains <- train_set[setdiff(1:dim(train_set)[1],fold),]
+  	   trains$label <- as.factor(trains$label)
+  	   set.seed(2020.3)
+  	   tmpRF <- randomForest(label ~ . ,data=trains,importance=T,ntree=1000,nodesize=1)
+  	   
+  	   
+result <- data.frame(importance(tmpRF,type=1))
+
+pdf("RF_nonsevereimportant_select.pdf")
+varImpPlot(tmpRF,n.var=min(nrow(result), nrow(tmpRF$importance)))
+dev.off()
+
+
+  	   
+predicted <- predict(tmpRF,test_set,type='prob') #
+predicts <- data.frame(predicted)
+predicts$observed <- test_label
+acc <- sum(predicts$predicted==predicts$observed)
+
+table(predicted,test_label)
+multiclass.roc(as.ordered(test_label),as.ordered(predicts$predicted))
+
+
+ROC1 <- roc(sapply(test_label,function(x){ifelse(x==1,1,0)}),predicts$X1 )
+#ci(ROC)
+ROC3 <- roc(sapply(test_label,function(x){ifelse(x==3,1,0)}),predicts$X3 )
+ROC5 <- roc(sapply(test_label,function(x){ifelse(x==5,1,0)}),predicts$X5 )
+
+pdf("RF_nonsevere_ROC20200511.pdf")
+plot.roc(ROC1,col = "blue3",ylim=c(0,1), 	
+  main="RF ROC",legacy.axes = TRUE,print.auc.cex=1.2)
+lines.roc(ROC3, col="3")
+lines.roc(ROC5, col="6")
+legend("bottomright", legend=c("ROC1", "ROC3","ROC5"), col=c("blue3", "3", "6"), lwd=2)
+dev.off()
+
+```
+
+
+
